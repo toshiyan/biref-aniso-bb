@@ -18,9 +18,11 @@ The following explains how to use this tool.
    clBB = local.compute_clbb(lbs,calC,Lmin=Lmin,Lmax=Lmax,lemin=lemin,lemax=lemax)
 
 - Reference
+
 If you use this tool, please cite Namikawa (2024). 
 
 - Acknowledgement
+
 This work is supported in part by JSPS KAKENHI Grant No. JP20H05859 and No. JP22K03682.
 Part of this work uses resources of the National Energy Research Scientific Computing Center (NERSC).
 The Kavli IPMU is supported by World Premier International Research Center Initiative (WPI Initiative), MEXT, Japan. 
