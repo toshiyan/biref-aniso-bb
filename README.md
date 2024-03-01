@@ -1,5 +1,5 @@
-This repository contains tools to compute the B-mode power spectrum indueced by time-varying anisotropic cosmic birefringence. 
-Details of the B-mode power spectrum formalism is described in Namikawa (2024). 
+This repository contains tools to compute the B-mode power spectrum induced by time-varying anisotropic cosmic birefringence. 
+Details of the B-mode power spectrum formalism are described in Namikawa (2024). 
 
 The following explains how to use this tool. 
 
