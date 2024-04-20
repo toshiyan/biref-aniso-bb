@@ -18,7 +18,6 @@ for L in tqdm.tqdm(Ls):
             continue
         fname = local.prep_inifile(k,L)
         subprocess.run(["./class_acb/class", fname])
-        #os.system("./class_acb/class "+fname)
         os.system("rm -rf "+fname)
 
 

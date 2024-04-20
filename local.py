@@ -6,21 +6,33 @@ import subprocess
 import sys
 import os
 import camb
+import cmb
+import emcee
 from tqdm import tqdm
 from scipy.integrate import simps
 from scipy.special import spherical_jn as jl
+from scipy.interpolate import InterpolatedUnivariateSpline as spline
+from scipy.stats import kde
 
 
-# fixed values
+#//// fixed values ////#
 ROOT = "/global/homes/t/toshiyan/Work/Ongoing/rotation/biref-aniso-bb/data/calEE/"
+
+# sptpol data
+nfreq = 3
+nbins = 7
+ndata = nfreq*nbins
+ical_90x90   =   367.669099005
+ical_90x150  =  -367.669099005
+ical_150x150 = 38911.2850797
 
 
 def set_ini_filename(k0,L0):
     return ROOT + "inifiles/run_params_k" + str(np.log10(k0))[:6] + "_L" + str(L0) + ".ini"
 
 
-def set_calEE_filename(k0,L0):
-    return ROOT + "aps/k" + str(np.log10(k0))[:6] + "_L" + str(L0)
+def set_calEE_filename(k0,L0,aps='aps'):
+    return ROOT + aps+"/k" + str(np.log10(k0))[:6] + "_L" + str(L0)
 
 
 def prep_inifile(k0,L0,verbose=False):
@@ -58,13 +70,17 @@ def prep_inifile(k0,L0,verbose=False):
     return filename
 
 
-def prep_camb(lemax):
+def prep_camb(lemax,sptpol=False):
     #Set up a new set of parameters for CAMB
     pars = camb.CAMBparams()
-    #This function sets up with one massive neutrino and helium set using BBN consistency
-    pars.set_cosmology(H0=67.5, ombh2=0.022, omch2=0.122, mnu=0.06, omk=0, tau=0.06)
-    pars.InitPower.set_params(As=2e-9, ns=0.965, r=0)
-    pars.set_for_lmax(lemax, lens_potential_accuracy=0);
+    #Planck 2018 TT,TE,EE+lowE+lensing
+    if sptpol:
+        pars.set_cosmology(H0=67.84, ombh2=0.022294, omch2=0.11837, tau=0.067, mnu=0.06, omk=0.)
+        pars.InitPower.set_params(As=np.exp(3.0659)*1e-10, ns=0.969, r=0)
+    else:
+        pars.set_cosmology(H0=67.36, ombh2=0.02237, omch2=0.12, mnu=0.06, omk=0, tau=0.0544)
+        pars.InitPower.set_params(As=2.1e-9, ns=0.9649, r=0)
+    pars.set_for_lmax(lemax, lens_potential_accuracy=1);
     # for conformal time
     back = camb.get_background(pars)
     #calculate results for these parameters
@@ -137,7 +153,7 @@ def compute_claa(ell,lnkmin,lnkmax,lnkn,back,zmin=800,zmax=1200,tophat=False,tra
 
 
 
-def compute_calC(ks,Lmin=1,Lmax=100,lemin=2,lemax=6000):
+def compute_calC(ks,Lmin=1,Lmax=100,lemin=2,lemax=6000,aps='aps'):
     
     dks = np.zeros(len(ks))
     dks[:-1] = (ks[1:]-ks[:-1])*.5
@@ -147,7 +163,7 @@ def compute_calC(ks,Lmin=1,Lmax=100,lemin=2,lemax=6000):
     
     calC = np.zeros((Lmax+1,lemax+1))
     for ki, k in enumerate(tqdm(ks)): 
-        calEE = np.array( [ np.loadtxt(set_calEE_filename(k,L)+'_cl.dat',unpack=True,usecols=2) for L in range(Lmin,Lmax+1) ] )
+        calEE = np.array( [ np.loadtxt(set_calEE_filename(k,L,aps)+'_cl.dat',unpack=True,usecols=2) for L in range(Lmin,Lmax+1) ] )
         calC[Lmin:,lemin:] += 4*np.pi*calEE*(dks[ki]/k) * 2*np.pi/(le*(le+1))
     return calC
 
@@ -166,3 +182,234 @@ def compute_clbb(lbs,calC,Lmin=1,Lmax=100,lemin=2,lemax=6000):
         clBB[i] = np.sum(Wl)/np.pi
     return clBB
     
+
+#////////////////////#
+# Constraint
+#////////////////////#
+
+def cl2cb(BBl,wl,nfreq,nbins):
+    BBb = np.zeros((nfreq*nbins))
+    n = 0
+    for i in range(nfreq):
+        for b in range(nbins):
+            BBb[n] = np.sum(wl[i*nbins+b,:]*BBl)
+            n += 1
+    return BBb
+
+
+def read_bp_window():
+    # bandpower window function
+    f = open('data/SPTpol_cosmomc/data/sptpol_500d_bb/sptpol_500d_BB_bpwfs.bin', 'r')
+    l0, l1 = np.fromfile(f,dtype=np.int32,count=2)
+    window = np.reshape(np.fromfile(f,dtype=np.float64),(ndata,l1-l0+1))
+    f.close()
+    l = np.linspace(l0,l1,l1-l0+1)
+    return l, window
+
+
+def read_bp_cov():
+    # bandpower covariance matrix
+    f = open('data/SPTpol_cosmomc/data/sptpol_500d_bb/sptpol_500d_BB_covariance.bin', 'r')
+    cov = np.reshape(np.fromfile(f,dtype=np.float64),(ndata,ndata))
+    f.close()
+    return cov
+
+
+def read_bp_freq():
+    # bandpower (each freq)
+    bc, bb_0, bb_1, bb_2 = np.loadtxt('data/SPTpol_cosmomc/data/sptpol_500d_bb/sptpol_500d_BB_bandpowers.txt',unpack=True,usecols=(0,5,4,3))
+    return bc, np.concatenate((bb_0,bb_1,bb_2))
+
+
+def prep_bb_theory(l,window,BB_lens=None):
+    
+    BB, bb = {}, {}
+    
+    # lensing
+    if BB_lens is None:
+        BB_lens = prep_camb(int(np.max(l)))[1]
+    
+    BB['lens'] = (l*(l+1)*cmb.Tcmb**2/np.pi/2.)*BB_lens[int(np.min(l)):int(np.max(l))+1]
+
+    # biref
+    L, BB_arot = np.loadtxt('data/clbb.dat',unpack=True)
+    BB['arot'] = spline( L, BB_arot*cmb.Tcmb**2*L*(L+1)/(2.*np.pi) )(l)
+    
+    # dust FGs
+    BB['dust'] = (0.0094)*(l/80.)**(-0.58)
+    
+    # poisson FGs
+    BB['pois'] = (l/3000.)**2
+
+    # compute bandpower
+    for t in ['lens','arot','dust','pois']:
+        bb[t] = cl2cb(BB[t],window,nfreq,nbins)
+
+    # correct scaling for dust
+    bb['dust'][1*nbins:2*nbins] *= dust_scaling(96.2,149.5)
+    bb['dust'][2*nbins:3*nbins] *= dust_scaling(96.2,96.2)
+
+    return BB, bb
+
+
+def dust_scaling(nu0,nu1,beta=1.59,Tdust=19.6):
+
+    return ((nu0*nu1)/(150.*150.))**beta * Bnu(nu0,150.,Tdust)*Bnu(nu1,150.,Tdust) / (dBdT(nu0,150.)*dBdT(nu1,150.))
+
+
+def dBdT(nu, nu0):
+    x0 = nu0 / 56.78
+    dBdT0 = x0**4 * np.exp(x0) / (np.exp(x0) - 1)**2
+    x = nu / 56.78
+    dBdT = x**4 * np.exp(x) / (np.exp(x) - 1)**2 / dBdT0
+
+    return dBdT
+
+
+def Bnu(nu, nu0, T, hk = 4.799237e-2):
+    
+    return (nu/nu0)**3 * (np.exp(hk*nu0/T)-1)/(np.exp(hk*nu/T)-1)
+
+
+def lnL(params,bb,bb_data,cov,berr,n=1,arot=True,sAlens=0.025,mAdust=0.0094):
+    
+    if arot: 
+        p0 = 3
+        Acb, Alens, Adust = params[:p0]
+    else:
+        p0 = 2
+        Alens, Adust = params[:p0]
+        Acb = 0.
+    
+    Ap = params[p0:p0+n]
+    if n==1: 
+        cal = params[p0+n:p0+n+1]
+        beam = params[p0+n+1:]
+    else: 
+        cal = params[p0+n:p0+n+2]
+        beam = params[p0+n+2:]
+    
+    if all( 0<=x for x in params[:p0]) and all( 0<=x<=10 for x in Ap) and all( 0<=x for x in cal):
+
+        bb_fit = np.zeros(ndata)
+        for nu in range(n):
+            if nu==0: c = cal[0]**2
+            if nu==1: c = cal[0]*cal[1]
+            if nu==2: c = cal[1]**2
+            for bi in range(nu*nbins,(nu+1)*nbins):
+                bb_fit[bi] = ( bb['arot'][bi]*Acb + bb['lens'][bi]*Alens + bb['dust'][bi]*Adust + bb['pois'][bi]*Ap[nu] ) / c
+
+        for bi in range(7):
+            bb_fit *= (1.+berr[:,bi]*beam[bi])
+
+        diff = (bb_fit-bb_data)[:n*nbins]
+        icov = np.linalg.inv(cov[:n*nbins,:n*nbins])
+    
+        # base likelihood
+        lnL  = -0.5*np.sum( np.dot(diff,np.dot(icov,diff)) )
+        
+        # add priors
+        if arot:
+            lnL += -0.5*(Alens-1.)**2/sAlens**2 
+        
+        lnL += - 0.5*(Adust-mAdust)**2/0.0021**2 - 0.5*np.sum(beam**2)
+        
+        if n==1:
+            lnL += -0.5*ical_150x150*(cal[0]-1.)**2
+        else:
+            lnL += -0.5*( ical_150x150*(cal[0]-1)**2 + 2*ical_90x150*(cal[0]-1)*(cal[1]-1) + ical_90x90*(cal[1]-1)**2 )
+
+        return lnL
+    
+    else:
+        
+        return -np.inf
+    
+    
+def lnL_set_params(n=1,arot=False,nwalkers=500,sAlens=0.5,mAdust=0.0094):
+
+    # Acb, Alens, Adust
+    sigma0 = np.array([1e-4,sAlens,0.005])
+    pos0   = np.array([0.,1.,mAdust])
+    
+    if not arot:
+        sigma0 = sigma0[1:]
+        pos0   = pos0[1:]
+    
+    # poisson
+    sigma_p = np.array([0.01,0.1,0.1])[:n]
+    pos_p   = np.array([0.01,0.1,0.1])[:n]
+
+    # cal
+    if n == 1:
+        sigma_c = 0.1*np.ones(1)
+        pos_c   = np.ones(1)
+    else:
+        sigma_c = 0.1*np.ones(2)
+        pos_c   = np.ones(2)
+
+    ndim = len(sigma0) + len(sigma_p) + len(sigma_c) + 7
+    sigma = np.concatenate( ( sigma0, sigma_p, sigma_c, np.ones(7) ) )
+    pos = np.concatenate( ( pos0, pos_p, pos_c, np.zeros(7) ) ) + sigma[None,:] * np.random.randn(nwalkers, ndim)
+    
+    return ndim, nwalkers, sigma, pos
+    
+
+def run_mcmc(bb,bb_data,cov,berr,n=3,arot=True,nwalkers=500,sAlens=0.5,mAdust=0.0094,steps=5000,discard=100,thin=20):
+    
+    ndim, nwalkers, sigma, pos = lnL_set_params(n=n,arot=arot,nwalkers=nwalkers,sAlens=sAlens,mAdust=mAdust)
+    sampler = emcee.EnsembleSampler(
+        nwalkers,
+        ndim,
+        lnL,
+        args=[bb,bb_data,cov,berr,n,arot,sAlens,mAdust],
+    )
+    sampler.run_mcmc(pos, steps, progress=True)
+    flat_samples = sampler.get_chain(discard=discard, thin=thin, flat=True)
+
+    # Post-processing: Remove unphysical values
+    valid_indices = np.where((flat_samples[:, 0] >= 0) & (flat_samples[:, 1] >= 0))[0]
+    
+    return ndim, flat_samples[valid_indices]
+
+    
+def highest_posterior_density_interval(samples, credible_interval=0.95, num_points=1000):
+    # Estimate the kernel density of the samples
+    kernel = kde.gaussian_kde(samples)
+    
+    # Generate a range of values for the posterior density
+    x_values = np.linspace(np.min(samples), np.max(samples), num_points)
+    
+    # Compute the posterior density at each point
+    posterior_density = kernel(x_values)
+    
+    # Sort the values and compute the cumulative distribution function (CDF)
+    sorted_indices = np.argsort(posterior_density)[::-1]
+    cdf = np.cumsum(posterior_density[sorted_indices]) / np.sum(posterior_density)
+    
+    # Find the indices corresponding to the desired credible interval
+    lower_index = np.argmax(cdf >= (1 - credible_interval))
+    upper_index = np.argmax(cdf >= credible_interval)
+    
+    # Extract the values corresponding to the HPD interval
+    hpd_interval = x_values[sorted_indices[lower_index:upper_index+1]]
+    
+    return hpd_interval
+
+
+def compute_hpd(samples):
+    
+    hpd_interval_68 = highest_posterior_density_interval(samples, credible_interval=0.6827)
+    hpd_interval_95 = highest_posterior_density_interval(samples, credible_interval=0.9545)
+    hpd_interval_99 = highest_posterior_density_interval(samples, credible_interval=0.9973)
+    
+    sigma_1 = np.array( [ np.min(hpd_interval_68),np.max(hpd_interval_68) ] )
+    sigma_2 = np.array( [ np.min(hpd_interval_95),np.max(hpd_interval_95) ] )
+    sigma_3 = np.array( [ np.min(hpd_interval_99),np.max(hpd_interval_99) ] )
+    
+    mean = np.mean(samples)
+    
+    print(mean,sigma_1-mean,sigma_2-mean)
+    
+    return mean, sigma_1, sigma_2, sigma_3, samples
+
