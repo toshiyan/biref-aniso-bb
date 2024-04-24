@@ -1,5 +1,5 @@
 This repository contains tools to compute the B-mode power spectrum induced by time-varying anisotropic cosmic birefringence. 
-Details of the B-mode power spectrum formalism are described in Namikawa (2024). 
+Details of the B-mode power spectrum formalism are described in Namikawa (2024) (https://inspirehep.net/literature/2779565). 
 
 The following explains how to use this tool. 
 
@@ -27,7 +27,17 @@ Running the code
 
 Reference
 ---
-If you use this tool, please cite Namikawa (2024). 
+If you use this tool, please cite the following reference:
+
+@article{Namikawa:2024dgj,
+    author = "Namikawa, Toshiya",
+    title = "{Exact CMB B-mode power spectrum from anisotropic cosmic birefringence}",
+    eprint = "2404.13771",
+    archivePrefix = "arXiv",
+    primaryClass = "astro-ph.CO",
+    month = "4",
+    year = "2024"
+}
 
 Acknowledgement
 ---
