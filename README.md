@@ -29,6 +29,7 @@ Reference
 ---
 If you use this tool, please cite the following reference:
 
+```
 @article{Namikawa:2024dgj,
     author = "Namikawa, Toshiya",
     title = "{Exact CMB B-mode power spectrum from anisotropic cosmic birefringence}",
@@ -38,6 +39,7 @@ If you use this tool, please cite the following reference:
     month = "4",
     year = "2024"
 }
+```
 
 Acknowledgement
 ---
